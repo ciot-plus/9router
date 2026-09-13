@@ -6,10 +6,33 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export function isCheckedInToday(psd) {
+  if (!psd || !psd.todayCheckedIn) return false;
+  const timeStr = psd.lastCheckinAt || psd.statusCheckedAt;
+  if (!timeStr) return false;
+  const checkinDate = new Date(timeStr);
+  if (isNaN(checkinDate.getTime())) return false;
+  const now = new Date();
+  return (
+    checkinDate.getFullYear() === now.getFullYear() &&
+    checkinDate.getMonth() === now.getMonth() &&
+    checkinDate.getDate() === now.getDate()
+  );
+}
+
+export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null, supportsCheckin = false, onCheckin = null, isCheckingIn = false, balance = null }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const proxyDropdownRef = useRef(null);
+
+  const checkedInToday = isCheckedInToday(connection.providerSpecificData);
+  const displayBalance = balance || (
+    (connection.provider === "traework" || connection.provider === "codebuddy-cn") &&
+    connection.providerSpecificData?.totalCredits !== undefined &&
+    connection.providerSpecificData?.totalCredits !== null
+      ? { text: String(connection.providerSpecificData.totalCredits), tooltip: `Credits: ${connection.providerSpecificData.totalCredits}` }
+      : null
+  );
 
   const proxyPoolMap = new Map((proxyPools || []).map((pool) => [pool.id, pool]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
@@ -181,7 +204,22 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                 {connection.lastError}
               </span>
             )}
+            {connection.providerSpecificData?.streakDays !== undefined && (
+              <Badge variant="success" size="sm" title={`Consecutive check-in: ${connection.providerSpecificData.streakDays} days`}>
+                {connection.providerSpecificData.streakDays}d streak
+              </Badge>
+            )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
+            {displayBalance && (
+              <Badge
+                variant="info"
+                size="sm"
+                icon="account_balance_wallet"
+                title={displayBalance.tooltip || (displayBalance.text ? `余额: ${displayBalance.text}` : "余额")}
+              >
+                {displayBalance.loading ? "余额..." : `余额: ${displayBalance.text}`}
+              </Badge>
+            )}
             {connection.globalPriority && (
               <span className="text-xs text-text-muted">Auto: {connection.globalPriority}</span>
             )}
@@ -257,6 +295,24 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </button>
             </Tooltip>
           )}
+          {supportsCheckin && (
+            <button
+              type="button"
+              onClick={onCheckin}
+              disabled={isCheckingIn}
+              className={`flex flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 hover:text-primary dark:hover:bg-white/5 disabled:opacity-50 ${
+                checkedInToday ? "text-green-600 dark:text-green-400" : "text-text-muted"
+              }`}
+              title={checkedInToday ? "Already checked in today" : "Check in"}
+            >
+              <span className={`material-symbols-outlined text-[18px] ${isCheckingIn ? "animate-spin" : ""}`}>
+                {isCheckingIn ? "progress_activity" : checkedInToday ? "task_alt" : "event_available"}
+              </span>
+              <span className="text-[10px] leading-tight">
+                {isCheckingIn ? "Checking in..." : checkedInToday ? "Checked in" : "Check-in"}
+              </span>
+            </button>
+          )}
           <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
@@ -315,4 +371,7 @@ ConnectionRow.propTypes = {
     onToggle: PropTypes.func,
     provider: PropTypes.string,
   }),
+  supportsCheckin: PropTypes.bool,
+  onCheckin: PropTypes.func,
+  isCheckingIn: PropTypes.bool,
 };

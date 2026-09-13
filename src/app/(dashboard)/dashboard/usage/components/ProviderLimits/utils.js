@@ -311,6 +311,19 @@ export function getRemainingPercentage(quota) {
   return calculatePercentage(quota?.used, quota?.total);
 }
 
+/**
+ * Check whether a quota entry is depleted (0% remaining).
+ * Unlimited quotas, error entries, and quotas with remaining > 0 are not depleted.
+ * @param {Object} quota - Normalized quota object
+ * @returns {boolean}
+ */
+export function isQuotaDepleted(quota) {
+  if (!quota || typeof quota !== "object") return false;
+  if (quota.name === "error" || quota.message) return false;
+  if (quota.unlimited === true) return false;
+  return getRemainingPercentage(quota) <= 0;
+}
+
 export function getQuotaVisibilityKey(quota) {
   if (!quota || typeof quota !== "object") return "";
   return String(quota.modelKey || quota.name || "").trim();
@@ -661,6 +674,20 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "traework":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              unlimited: quota.unlimited === true,
+            });
+          });
+        }
+        break;
+
       default:
         // Generic fallback for unknown providers
         if (data.quotas) {
@@ -670,6 +697,7 @@ export function parseQuotaData(provider, data) {
               used: quota.used || 0,
               total: quota.total || 0,
               resetAt: quota.resetAt || null,
+              unlimited: quota.unlimited === true,
             });
           });
         }

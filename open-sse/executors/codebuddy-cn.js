@@ -64,6 +64,28 @@ export class CodeBuddyExecutor extends DefaultExecutor {
     // filter and return an error (#2071).
     return transformed;
   }
+
+  // wild-work ChatHeaders parity: attach the account uid as X-User-Id when
+  // known (stored in providerSpecificData at OAuth login), omit otherwise.
+  buildHeaders(credentials, stream, url, model) {
+    const headers = super.buildHeaders(credentials, stream, url, model);
+    const uid = credentials?.providerSpecificData?.uid;
+    if (uid) headers["X-User-Id"] = String(uid);
+    return headers;
+  }
+
+  async refreshCredentials(credentials, log, proxyOptions = null) {
+    if (!credentials?.refreshToken) return null;
+    try {
+      const { refreshCodebuddyToken } = await import("../services/tokenRefresh/providers.js");
+      const result = await refreshCodebuddyToken(credentials.refreshToken, log);
+      if (result) log?.info?.("TOKEN", "codebuddy-cn refreshed");
+      return result;
+    } catch (error) {
+      log?.error?.("TOKEN", `codebuddy-cn refresh error: ${error.message}`);
+      return null;
+    }
+  }
 }
 
 export default CodeBuddyExecutor;

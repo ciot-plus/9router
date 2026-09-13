@@ -687,6 +687,82 @@ export async function refreshTraeToken(refreshToken, credentials, log) {
   }, log);
 }
 
+// TraeWork (Trae SOLO) refresh — POST ExchangeToken with JSON body {ClientID: "en1oxy7wnw8j9n", RefreshToken, ClientSecret: "-", UserID: ""}.
+export async function refreshTraeworkToken(refreshToken, credentials, log) {
+  if (!refreshToken) return null;
+  const oauth = PROVIDER_OAUTH.traework || {};
+  const origins = [
+    "https://api.trae.com.cn",
+    credentials?.providerSpecificData?.apiHost,
+    "https://api.trae.cn",
+  ].filter(Boolean);
+
+  return dedupRefresh("traework", refreshToken, async () => {
+    let lastErr = "";
+    for (const origin of origins) {
+      const url = `${origin.replace(/\/+$/, "")}/cloudide/api/v3/trae/oauth/ExchangeToken`;
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "User-Agent": `Trae/${oauth.ideVersion || "0.1.52"}`,
+          },
+          body: JSON.stringify({
+            ClientID: oauth.clientId || "en1oxy7wnw8j9n",
+            RefreshToken: refreshToken,
+            ClientSecret: "-",
+            UserID: "",
+          }),
+        });
+
+        if (!response.ok) {
+          lastErr = `${origin} HTTP ${response.status}`;
+          continue;
+        }
+
+        const payload = await response.json();
+        const result = payload?.Result || payload?.result || payload;
+        const accessToken = result?.Token || result?.AccessToken || result?.accessToken;
+        if (!accessToken) {
+          lastErr = `${origin} missing Token`;
+          continue;
+        }
+
+        const newRefresh = result?.RefreshToken || result?.refreshToken || refreshToken;
+        const tokenExpireAt = result?.TokenExpireAt || result?.ExpiresAt;
+        const tokenExpireDuration = result?.TokenExpireDuration;
+
+        let expiresIn = 86400 * 14;
+        if (typeof tokenExpireAt === "number" && tokenExpireAt > 0) {
+          const expSec = tokenExpireAt > 1e12 ? Math.floor(tokenExpireAt / 1000) : tokenExpireAt;
+          expiresIn = Math.max(60, expSec - Math.floor(Date.now() / 1000));
+        } else if (typeof tokenExpireDuration === "number" && tokenExpireDuration > 0) {
+          expiresIn = tokenExpireDuration > 1e9 ? Math.floor(tokenExpireDuration / 1000) : tokenExpireDuration;
+        }
+
+        log?.info?.("TOKEN_REFRESH", "Successfully refreshed TraeWork token", {
+          hasNewAccessToken: !!accessToken,
+          hasNewRefreshToken: newRefresh !== refreshToken,
+          expiresIn,
+        });
+
+        return {
+          accessToken,
+          refreshToken: newRefresh,
+          expiresIn,
+        };
+      } catch (err) {
+        lastErr = `${origin} ${err.message}`;
+      }
+    }
+
+    log?.error?.("TOKEN_REFRESH", `Failed to refresh TraeWork token: ${lastErr}`);
+    return null;
+  }, log);
+}
+
 // Zed access_token is long-lived; auth flow returns no refresh_token.
 // No refresh possible — re-login required when token expires/revoked.
 // Mirrors cursor/kilocode null-refresh pattern.

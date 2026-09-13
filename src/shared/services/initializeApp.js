@@ -118,6 +118,11 @@ async function runHeavyStartup() {
   import("@/sse/services/backgroundTokenRefresh.js")
     .then(({ startBackgroundTokenRefresh }) => startBackgroundTokenRefresh())
     .catch((e) => console.log("[BackgroundTokenRefresh] scheduler start failed:", e.message));
+
+  // Daily auto check-in scheduler (e.g. CodeBuddy CN, TraeWork at 21:00:00).
+  import("@/shared/services/autoCheckin.js")
+    .then(({ startAutoCheckinScheduler }) => startAutoCheckinScheduler())
+    .catch((e) => console.log("[AutoCheckin] scheduler start failed:", e.message));
 }
 
 function hasQuotaAutoPingEnabled(settings) {

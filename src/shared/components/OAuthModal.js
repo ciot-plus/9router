@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
 import PropTypes from "prop-types";
 import { Modal, Button, Input } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 // Providers using the dynamic-port local callback proxy.
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
-const PROXY_OAUTH_PROVIDERS = new Set(["trae", "windsurf", "zed"]);
+const PROXY_OAUTH_PROVIDERS = new Set(["trae", "traework", "windsurf", "zed"]);
 
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
@@ -19,6 +19,14 @@ const PASTE_TOKEN_PROVIDERS = {
     placeholder: "Paste Cloud-IDE-JWT here...",
     ideName: "Trae",
     ideOptional: true, // token can be grabbed from DevTools without the IDE
+  },
+  traework: {
+    label: "Trae SOLO Token / Callback URL",
+    instructions:
+      "在 trae.cn 完成授权后，复制浏览器地址栏的回调 URL（http://127.0.0.1:.../authorize?...），或从 DevTools 中复制 Cloud-IDE-JWT 粘贴到此处。",
+    placeholder: "粘贴完整回调 URL 或 Cloud-IDE-JWT token...",
+    ideName: "Trae",
+    ideOptional: true,
   },
   windsurf: {
     label: "Windsurf API key",
@@ -52,20 +60,18 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const openedRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
 
-  // State for client-only values to avoid hydration mismatch
-  const [isLocalhost, setIsLocalhost] = useState(false);
-  const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
+  // Client-only values to avoid hydration mismatch
+  const isLocalhost = useSyncExternalStore(
+    () => () => {},
+    () => window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1",
+    () => false
+  );
+  const placeholderUrl = useSyncExternalStore(
+    () => () => {},
+    () => `${window.location.origin}/callback?code=...`,
+    () => "/callback?code=..."
+  );
   const callbackProcessedRef = useRef(false);
-
-  // Detect if running on localhost (client-side only)
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setIsLocalhost(
-        window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-      );
-      setPlaceholderUrl(`${window.location.origin}/callback?code=...`);
-    }
-  }, []);
 
   // Define all useCallback hooks BEFORE the useEffects that reference them
 
@@ -198,6 +204,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     //    sent via POST body so the private key never lands in URL/query logs.
     const regBody = { state: authData.state };
     if (authData.codeVerifier) regBody.codeVerifier = authData.codeVerifier;
+    if (authData.machineId) regBody.machineId = authData.machineId;
+    if (authData.deviceId) regBody.deviceId = authData.deviceId;
     await fetch(`/api/oauth/${providerId}/register-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -432,6 +440,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         fetch("/api/oauth/xai/stop-proxy").catch(() => {});
       } else if (provider === "trae") {
         fetch("/api/oauth/trae/stop-proxy").catch(() => {});
+      } else if (provider === "traework") {
+        fetch("/api/oauth/traework/stop-proxy").catch(() => {});
       } else if (provider === "windsurf") {
         fetch("/api/oauth/windsurf/stop-proxy").catch(() => {});
       } else if (provider === "zed") {
@@ -581,13 +591,25 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       if (authMode === "paste-token" && PASTE_TOKEN_PROVIDERS[provider]) {
         const token = pasteToken.trim();
         if (!token) throw new Error("Missing token");
+        const meta = {};
+        if (authData?.machineId) meta.machineId = authData.machineId;
+        if (authData?.deviceId) meta.deviceId = authData.deviceId;
         const res = await fetch(`/api/oauth/${provider}/exchange`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: token }),
+          body: JSON.stringify({
+            code: token,
+            state: authData?.state,
+            codeVerifier: authData?.codeVerifier,
+            redirectUri: authData?.redirectUri,
+            meta: Object.keys(meta).length ? meta : undefined,
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
+        if (PROXY_OAUTH_PROVIDERS.has(provider)) {
+          fetch(`/api/oauth/${provider}/stop-proxy`).catch(() => {});
+        }
         setStep("success");
         onSuccess?.();
         return;
@@ -595,15 +617,25 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       const input = callbackUrl.trim();
 
-      // Trae/Windsurf proxy flow fallback (popup blocked): paste the full callback URL
+      // Trae/Windsurf proxy flow fallback: paste the full callback URL
       if (PROXY_OAUTH_PROVIDERS.has(provider) && input) {
+        const meta = {};
+        if (authData?.machineId) meta.machineId = authData.machineId;
+        if (authData?.deviceId) meta.deviceId = authData.deviceId;
         const res = await fetch(`/api/oauth/${provider}/exchange`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: input, state: authData?.state }),
+          body: JSON.stringify({
+            code: input,
+            state: authData?.state,
+            codeVerifier: authData?.codeVerifier,
+            redirectUri: authData?.redirectUri,
+            meta: Object.keys(meta).length ? meta : undefined,
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
+        fetch(`/api/oauth/${provider}/stop-proxy`).catch(() => {});
         setStep("success");
         onSuccess?.();
         return;
@@ -660,6 +692,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       fetch("/api/oauth/xai/stop-proxy").catch(() => {});
     } else if (provider === "trae") {
       fetch("/api/oauth/trae/stop-proxy").catch(() => {});
+    } else if (provider === "traework") {
+      fetch("/api/oauth/traework/stop-proxy").catch(() => {});
     } else if (provider === "windsurf") {
       fetch("/api/oauth/windsurf/stop-proxy").catch(() => {});
     } else if (provider === "zed") {
@@ -682,77 +716,62 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   return (
     <Modal isOpen={isOpen} title={modalTitle} onClose={handleClose} size="lg">
       <div className="flex flex-col gap-4">
-        {/* Trae/Windsurf: browser OAuth (proxy) + paste-token fallback */}
+        {/* Trae/Windsurf: browser OAuth (proxy) + manual callback/token fallback */}
         {PROXY_OAUTH_PROVIDERS.has(provider) && (step === "waiting" || step === "input" || step === "error") && (
           <>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => { setAuthMode("browser"); setError(null); setStep("waiting"); startOAuthFlow(); }}
-                className={`flex-1 rounded-lg border px-3 py-2 text-sm transition-colors ${authMode === "browser" ? "border-primary bg-primary/10 text-primary" : "border-border text-text-muted hover:text-primary"}`}
-              >
-                🌐 Sign in with browser
-              </button>
-              <button
-                type="button"
-                onClick={() => { setAuthMode("paste-token"); setError(null); setStep("input"); }}
-                className={`flex-1 rounded-lg border px-3 py-2 text-sm transition-colors ${authMode === "paste-token" ? "border-primary bg-primary/10 text-primary" : "border-border text-text-muted hover:text-primary"}`}
-              >
-                🔑 Paste token
-              </button>
+            <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
+              <span className="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
+              <span className="text-sm">Waiting for browser authorization…</span>
             </div>
 
-            {authMode === "browser" && (
-              <>
-                {step === "waiting" && (
-                  <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
-                    <span className="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
-                    <span className="text-sm">Waiting for browser authorization…</span>
-                  </div>
-                )}
-                {step === "input" && (
-                  <div className="space-y-3">
-                    <p className="text-sm text-text-muted">
-                      Popup was blocked. After authorizing in the browser, paste the full callback URL here:
-                    </p>
-                    <Input
-                      value={callbackUrl}
-                      onChange={(e) => setCallbackUrl(e.target.value)}
-                      placeholder="http://127.0.0.1:.../callback?..."
-                      className="font-mono text-xs"
-                    />
-                    <div className="flex gap-2">
-                      <Button onClick={handleManualSubmit} fullWidth disabled={!callbackUrl}>Connect</Button>
-                      <Button onClick={handleClose} variant="ghost" fullWidth>Cancel</Button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
+            {/* Divider */}
+            <div className="flex items-center gap-3 my-1">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-xs text-text-muted uppercase tracking-wider">Or paste callback URL manually</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
 
-            {authMode === "paste-token" && (
-              <div className="space-y-3">
-                {ideStatus && !ideStatus.installed && (
-                  <div className={`px-3 py-2 rounded-lg text-sm ${PASTE_TOKEN_PROVIDERS[provider].ideOptional ? "bg-blue-500/10 text-blue-700 dark:text-blue-300" : "bg-yellow-500/10 text-yellow-700 dark:text-yellow-300"}`}>
-                    {PASTE_TOKEN_PROVIDERS[provider].ideName} IDE not detected.
-                    {PASTE_TOKEN_PROVIDERS[provider].ideOptional
-                      ? " You can still grab the token from DevTools."
-                      : ` Install ${PASTE_TOKEN_PROVIDERS[provider].ideName} IDE to get the token, or use "Sign in with browser".`}
+            <div className="space-y-3">
+              {!isLocalhost && (
+                <div className="px-3 py-2 rounded-lg text-xs bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300">
+                  提示：当前在远程服务器运行。浏览器完成授权后若跳转到本地地址（如 <code>http://127.0.0.1:.../authorize?...</code>）并显示无法访问页面，请直接从浏览器地址栏复制完整 URL 粘贴到下方完成连接。
+                </div>
+              )}
+              {authData?.authUrl && (
+                <div>
+                  <p className="text-xs font-medium mb-1 text-text-muted">
+                    授权页面未自动打开？可复制以下链接在浏览器中打开：
+                  </p>
+                  <div className="flex gap-2">
+                    <Input value={authData.authUrl} readOnly className="flex-1 font-mono text-xs" />
+                    <Button variant="secondary" size="sm" icon={copied === "auth_url" ? "check" : "content_copy"} onClick={() => copy(authData.authUrl, "auth_url")}>
+                      复制
+                    </Button>
+                    <Button variant="secondary" size="sm" icon="open_in_new" onClick={() => window.open(authData.authUrl, "_blank", "noopener,noreferrer")}>
+                      打开
+                    </Button>
                   </div>
-                )}
-                <p className="text-sm text-text-muted">{PASTE_TOKEN_PROVIDERS[provider].instructions}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-sm font-medium mb-1">
+                  粘贴回调 URL：
+                </p>
+                <p className="text-xs text-text-muted mb-2">
+                  在浏览器授权完成后，复制地址栏中的完整回调 URL（包含 authCodeInfo 等参数）或 token 粘贴到此处：
+                </p>
                 <Input
-                  value={pasteToken}
-                  onChange={(e) => setPasteToken(e.target.value)}
-                  placeholder={PASTE_TOKEN_PROVIDERS[provider].placeholder}
+                  value={callbackUrl}
+                  onChange={(e) => setCallbackUrl(e.target.value)}
+                  placeholder={provider === "traework" ? "http://127.0.0.1:.../authorize?isRedirect=true&... 或 Cloud-IDE-JWT" : "http://127.0.0.1:.../callback?..."}
                   className="font-mono text-xs"
                 />
-                <div className="flex gap-2">
-                  <Button onClick={handleManualSubmit} fullWidth disabled={!pasteToken}>Connect</Button>
-                  <Button onClick={handleClose} variant="ghost" fullWidth>Cancel</Button>
-                </div>
               </div>
-            )}
+              <div className="flex gap-2">
+                <Button onClick={handleManualSubmit} fullWidth disabled={!callbackUrl}>Connect</Button>
+                <Button onClick={handleClose} variant="ghost" fullWidth>Cancel</Button>
+              </div>
+            </div>
           </>
         )}
 

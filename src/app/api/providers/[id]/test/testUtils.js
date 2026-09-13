@@ -1,6 +1,7 @@
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
+import { buildCodebuddyIdentityPatch } from "@/lib/oauth/providerHelpers";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
@@ -92,6 +93,25 @@ const OAUTH_TEST_CONFIG = {
     authPrefix: "Bearer ",
   },
   "codebuddy-cn": { tokenExists: true },
+  "codebuddy-intl": { tokenExists: true },
+  traework: {
+    url: "https://api.trae.cn/trae/api/v2/pay/web_user_ent_usage",
+    method: "POST",
+    authHeader: "Authorization",
+    authPrefix: "Cloud-IDE-JWT ",
+    extraHeaders: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent": "Trae/0.1.52",
+      "X-User-Region": "CN",
+      "x-device-brand": "20Y5A002XX",
+      "x-device-type": "windows",
+      "x-os-version": "Windows 10 Pro",
+      "x-app-version": "0.1.52",
+    },
+    body: JSON.stringify({ require_usage: true }),
+    refreshable: true,
+  },
   kimchi: {
     url: KIMCHI_CONFIG.validationUrl || "https://api.cast.ai/v1/llm/openai/supported-providers",
     method: "GET",
@@ -239,7 +259,7 @@ async function refreshOAuthToken(connection) {
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
     }
 
-    if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
+    if (provider === "codex" || provider === "grok-cli" || provider === "xai" || provider === "traework") {
       return await refreshProviderCredentials(provider, connection, console);
     }
 
@@ -891,6 +911,19 @@ export async function testSingleConnection(id) {
   }
 
   await updateProviderConnection(id, updateData);
+
+  // CodeBuddy rows created before uid/masked-name persistence existed: backfill
+  // them from the JWT while testing. Runs after the status write and re-reads
+  // the row so a mid-test token refresh can't be clobbered by a stale patch.
+  if (connection.provider === "codebuddy-cn" || connection.provider === "codebuddy-intl") {
+    try {
+      const fresh = await getProviderConnectionById(id);
+      const identityPatch = buildCodebuddyIdentityPatch(fresh);
+      if (identityPatch) await updateProviderConnection(id, identityPatch);
+    } catch (err) {
+      console.log("codebuddy identity backfill on test failed:", err?.message || err);
+    }
+  }
 
   return { valid: result.valid, error: result.error, refreshed: !!result.refreshed, latencyMs, testedAt: new Date().toISOString() };
 }

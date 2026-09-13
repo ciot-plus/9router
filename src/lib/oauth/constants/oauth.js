@@ -117,6 +117,24 @@ export const CODEBUDDY_CONFIG = { ...PROVIDER_OAUTH["codebuddy-cn"] };
 // CodeBuddy International — same shape as CN, .ai domain (mirror of codebuddy-cn).
 export const CODEBUDDY_INTL_CONFIG = { ...PROVIDER_OAUTH["codebuddy-intl"] };
 
+// TraeWork (Trae SOLO) OAuth Configuration (PKCE + local callback flow)
+export const TRAEWORK_CONFIG = {
+  ...(PROVIDER_OAUTH["traework"] || {}),
+  clientId: "en1oxy7wnw8j9n",
+  clientSecret: "-",
+  authorizationUrl: "https://www.trae.cn/authorization",
+  exchangeTokenPath: "/cloudide/api/v3/trae/oauth/ExchangeToken",
+  authCodeExchangePath: "/trae/api/v3/oauth/ExchangeToken",
+  getUserInfoPath: "/cloudide/api/v3/trae/GetUserInfo",
+  apiOrigins: [
+    "https://api.trae.cn",
+    "https://api.trae.com.cn",
+    "https://www.trae.cn",
+  ],
+  callbackPath: "/authorize",
+  oauthTimeoutMs: 300000,
+};
+
 // Kimchi OAuth Configuration (Browser token callback flow)
 export const KIMCHI_CONFIG = { ...PROVIDER_OAUTH["kimchi"] };
 
@@ -236,6 +254,7 @@ export const PROVIDERS = {
   KIMCHI: "kimchi",
   GROK_CLI: "grok-cli",
   TRAE: "trae",
+  TRAEWORK: "traework",
   WINDSURF: "windsurf",
   ZED: "zed",
 };

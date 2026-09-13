@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
-import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
+import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS, CHECKIN_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
@@ -34,6 +34,8 @@ const AUTO_PING_SETTINGS_KEYS = {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+const HOURLY_OPTIONS = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}:00`);
 
 export default function ProviderDetailPage() {
   const params = useParams();
@@ -82,8 +84,20 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
+  const [checkingInIds, setCheckingInIds] = useState(() => new Set());
+  const [batchCheckingIn, setBatchCheckingIn] = useState(false);
+  const [batchCheckinStatus, setBatchCheckinStatus] = useState("");
+  const stopBatchCheckinRef = useRef(false);
+  const [autoCheckinEnabled, setAutoCheckinEnabled] = useState(false);
+  const [togglingAutoCheckin, setTogglingAutoCheckin] = useState(false);
+  const [autoCheckinTime, setAutoCheckinTime] = useState("21:00");
+  const [balances, setBalances] = useState({});
+  const [loadingBalances, setLoadingBalances] = useState(false);
   const [importingClineModels, setImportingClineModels] = useState(false);
+
   const { copied, copy } = useCopyToClipboard();
+
+  const supportsCheckin = CHECKIN_SUPPORTED_PROVIDERS?.includes(providerId) || providerId === "codebuddy-cn";
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
 
@@ -157,7 +171,7 @@ export default function ProviderDetailPage() {
     ? liveModels
     : staticModels;
   const providerAlias = getProviderAlias(providerId);
-  
+
   const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
   const isAnthropicCompatible = isAnthropicCompatibleProvider(providerId);
   const isCompatible = isOpenAICompatible || isAnthropicCompatible;
@@ -299,6 +313,60 @@ export default function ProviderDetailPage() {
       .catch(() => {});
   }, [providerId]);
 
+  const fetchBalances = useCallback(async (connList) => {
+    if (!connList || connList.length === 0) return;
+    if (providerId !== "traework" && providerId !== "codebuddy-cn") return;
+
+    setLoadingBalances(true);
+    const results = {};
+    await Promise.allSettled(
+      connList.map(async (conn) => {
+        try {
+          const res = await fetch(`/api/usage/${conn.id}`, { cache: "no-store" });
+          if (!res.ok) {
+            const credits = conn.providerSpecificData?.totalCredits;
+            if (credits !== undefined && credits !== null) {
+              results[conn.id] = { text: String(credits), tooltip: `Credits: ${credits}` };
+            }
+            return;
+          }
+          const data = await res.json();
+          if (data.quotas && Object.keys(data.quotas).length > 0) {
+            let totalRemaining = 0;
+            let totalLimit = 0;
+            const lines = [];
+            for (const [name, q] of Object.entries(data.quotas)) {
+              const rem = q.remaining !== undefined ? q.remaining : Math.max(0, (q.total || 0) - (q.used || 0));
+              totalRemaining += rem;
+              totalLimit += (q.total || 0);
+              lines.push(`${name}: ${rem % 1 === 0 ? rem : rem.toFixed(2)} / ${q.total ? (q.total % 1 === 0 ? q.total : q.total.toFixed(2)) : "∞"}`);
+            }
+            const formattedRem = totalRemaining % 1 === 0 ? totalRemaining : totalRemaining.toFixed(2);
+            const formattedLimit = totalLimit % 1 === 0 ? totalLimit : totalLimit.toFixed(2);
+            results[conn.id] = {
+              remaining: totalRemaining,
+              total: totalLimit,
+              text: totalLimit > 0 ? `${formattedRem} / ${formattedLimit}` : `${formattedRem}`,
+              tooltip: lines.join("\n"),
+            };
+          } else {
+            const credits = conn.providerSpecificData?.totalCredits;
+            if (credits !== undefined && credits !== null) {
+              results[conn.id] = { text: String(credits), tooltip: `Credits: ${credits}` };
+            }
+          }
+        } catch (e) {
+          const credits = conn.providerSpecificData?.totalCredits;
+          if (credits !== undefined && credits !== null) {
+            results[conn.id] = { text: String(credits), tooltip: `Credits: ${credits}` };
+          }
+        }
+      })
+    );
+    setBalances((prev) => ({ ...prev, ...results }));
+    setLoadingBalances(false);
+  }, [providerId]);
+
   const fetchConnections = useCallback(async () => {
     try {
       const [connectionsRes, nodesRes, proxyPoolsRes, settingsRes] = await Promise.all([
@@ -314,6 +382,9 @@ export default function ProviderDetailPage() {
       if (connectionsRes.ok) {
         const filtered = (connectionsData.connections || []).filter(c => c.provider === providerId);
         setConnections(filtered);
+        if (providerId === "traework" || providerId === "codebuddy-cn") {
+          fetchBalances(filtered);
+        }
       }
       if (proxyPoolsRes.ok) {
         setProxyPools(proxyPoolsData.proxyPools || []);
@@ -328,6 +399,14 @@ export default function ProviderDetailPage() {
       const autoPingSettingsKey = AUTO_PING_SETTINGS_KEYS[providerId];
       const apCfg = autoPingSettingsKey ? settingsData[autoPingSettingsKey] || {} : {};
       setAutoPing({ enabled: apCfg.enabled === true, connections: apCfg.connections || {} });
+      const acCfg = settingsData.autoCheckin || {};
+      const provMap = acCfg.providers || {};
+      const isAutoCheckin = provMap[providerId] !== undefined
+        ? provMap[providerId] === true
+        : (providerId === "codebuddy-cn" || providerId === "traework");
+      setAutoCheckinEnabled(isAutoCheckin);
+      const configuredTime = acCfg.providerTimes?.[providerId] || acCfg.time || "21:00:00";
+      setAutoCheckinTime(configuredTime.slice(0, 5));
       if (nodesRes.ok) {
         let node = (nodesData.nodes || []).find((entry) => entry.id === providerId) || null;
 
@@ -467,9 +546,8 @@ export default function ProviderDetailPage() {
     fetchDisabledModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
 
-  // Cursor's model availability is account-specific and changes frequently.
-  // Load the active account's live catalog for the dashboard; the static
-  // registry remains the fallback while the request is pending or unavailable.
+  // Live model availability for Cursor (dynamic catalog). TraeWork / CodeBuddy CN
+  // use the static registry list configured on this page instead.
   useEffect(() => {
     if (providerId !== "cursor") {
       setLiveModels([]);
@@ -593,7 +671,7 @@ export default function ProviderDetailPage() {
       for (const model of models) {
         const modelId = model.id || model.name;
         if (!modelId) continue;
-        
+
         // Qoder model ID format may be "qoder/auto" or "auto", need to remove prefix
         const cleanModelId = modelId.replace(/^qoder\//, "");
         const alreadyExists = customModels.some(
@@ -606,7 +684,7 @@ export default function ProviderDetailPage() {
         await handleAddCustomModel(cleanModelId, "llm", providerStorageAlias);
         importedCount += 1;
       }
-      
+
       if (importedCount === 0) {
         alert(translate("All models already exist, no new models added"));
       } else {
@@ -664,6 +742,153 @@ export default function ProviderDetailPage() {
       alert(translate("Error fetching models") + ": " + error.message);
     } finally {
       setImportingClineModels(false);
+    }
+  };
+
+  const handleCheckin = async (conn) => {
+    if (!conn?.id || checkingInIds.has(conn.id)) return;
+    setCheckingInIds((prev) => new Set(prev).add(conn.id));
+    try {
+      const res = await fetch(`/api/providers/${conn.id}/checkin`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (data.alreadyCheckedIn) {
+          alert(data.message || translate("Already checked in today"));
+        } else {
+          const reward = data.data?.credit ? ` (+${data.data.credit})` : "";
+          const streak = data.data?.streak_days ? ` (${data.data.streak_days} days)` : "";
+          alert(`${translate("Check-in successful!")}${reward}${streak}`);
+        }
+        await fetchConnections();
+      } else {
+        alert(data.error || translate("Check-in failed"));
+      }
+    } catch (err) {
+      console.log("Check-in error:", err);
+      alert(`${translate("Check-in failed")}: ${err.message}`);
+    } finally {
+      setCheckingInIds((prev) => {
+        const next = new Set(prev);
+        next.delete(conn.id);
+        return next;
+      });
+    }
+  };
+
+  const handleTimeChange = async (e) => {
+    const newTime = e.target.value;
+    setAutoCheckinTime(newTime);
+    try {
+      await fetch("/api/checkin/auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "setTime",
+          providerId,
+          time: `${newTime}:00`,
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to update auto check-in time:", err);
+    }
+  };
+
+  const handleToggleAutoCheckin = async () => {
+    if (togglingAutoCheckin) return;
+    setTogglingAutoCheckin(true);
+    const nextState = !autoCheckinEnabled;
+    try {
+      const res = await fetch("/api/checkin/auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "toggle",
+          providerId,
+          enabled: nextState,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setAutoCheckinEnabled(nextState);
+        alert(
+          nextState
+            ? `自动签到已开启（每天 ${autoCheckinTime}:00 逐个签到，间隔 5-10 秒）`
+            : translate("Auto check-in disabled")
+        );
+      } else {
+        alert(data.error || "Failed to update auto check-in");
+      }
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setTogglingAutoCheckin(false);
+    }
+  };
+
+  const handleBatchCheckin = async () => {
+    if (batchCheckingIn) return;
+    const targetConnections = connections;
+    if (targetConnections.length === 0) {
+      alert(translate("No connections to check in"));
+      return;
+    }
+    setBatchCheckingIn(true);
+    stopBatchCheckinRef.current = false;
+    let successCount = 0;
+    let alreadyCount = 0;
+    let failCount = 0;
+
+    for (let index = 0; index < targetConnections.length; index++) {
+      if (stopBatchCheckinRef.current) break;
+      const conn = targetConnections[index];
+
+      // If not the first account, wait a random 5-10 seconds between accounts
+      if (index > 0) {
+        const delaySec = Math.floor(Math.random() * 6) + 5; // 5 to 10 seconds
+        for (let cd = delaySec; cd > 0; cd--) {
+          if (stopBatchCheckinRef.current) break;
+          setBatchCheckinStatus(`${translate("Waiting")} ${cd}s... (${index + 1}/${targetConnections.length})`);
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+
+      if (stopBatchCheckinRef.current) break;
+
+      setBatchCheckinStatus(`${translate("Checking in...")} (${index + 1}/${targetConnections.length})`);
+      setCheckingInIds((prev) => new Set(prev).add(conn.id));
+
+      try {
+        const res = await fetch(`/api/providers/${conn.id}/checkin`, { method: "POST" });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (data.alreadyCheckedIn) alreadyCount++;
+          else successCount++;
+        } else {
+          failCount++;
+        }
+      } catch {
+        failCount++;
+      } finally {
+        setCheckingInIds((prev) => {
+          const next = new Set(prev);
+          next.delete(conn.id);
+          return next;
+        });
+      }
+    }
+
+    setBatchCheckingIn(false);
+    setBatchCheckinStatus("");
+    await fetchConnections();
+
+    const summary = [];
+    if (successCount > 0) summary.push(`${translate("Check-in successful!")}: ${successCount}`);
+    if (alreadyCount > 0) summary.push(`${translate("Already checked in today")}: ${alreadyCount}`);
+    if (failCount > 0) summary.push(`${translate("Check-in failed")}: ${failCount}`);
+    if (summary.length > 0) {
+      alert(summary.join("\n"));
     }
   };
 
@@ -926,6 +1151,24 @@ export default function ProviderDetailPage() {
     setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
   }, [connections]);
 
+  const totalRemainingBalance = useMemo(() => {
+    if (providerId !== "traework" && providerId !== "codebuddy-cn") return null;
+    let sum = 0;
+    let hasAny = false;
+    for (const conn of connections) {
+      const b = balances[conn.id];
+      if (b?.remaining !== undefined) {
+        sum += b.remaining;
+        hasAny = true;
+      } else if (conn.providerSpecificData?.totalCredits !== undefined && conn.providerSpecificData?.totalCredits !== null) {
+        sum += Number(conn.providerSpecificData.totalCredits) || 0;
+        hasAny = true;
+      }
+    }
+    if (!hasAny) return null;
+    return sum % 1 === 0 ? sum : sum.toFixed(2);
+  }, [balances, connections, providerId]);
+
   const selectedProxySummary = (() => {
     if (selectedConnections.length === 0) return "";
     const poolIds = new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"));
@@ -1048,6 +1291,10 @@ export default function ProviderDetailPage() {
                 }}
                 onDelete={() => handleDelete(conn.id)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
+                supportsCheckin={supportsCheckin}
+                onCheckin={() => handleCheckin(conn)}
+                isCheckingIn={checkingInIds.has(conn.id) || batchCheckingIn}
+                balance={balances[conn.id] || null}
               />
             </div>
           </div>
@@ -1492,7 +1739,14 @@ export default function ProviderDetailPage() {
       ) : (
         <Card>
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="text-lg font-semibold">Connections</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold">Connections</h2>
+              {totalRemainingBalance !== null && (
+                <Badge variant="info" size="sm" icon="account_balance_wallet" title="所有连接余额汇总">
+                  总余额: {totalRemainingBalance}
+                </Badge>
+              )}
+            </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
               {connections.length > 0 && proxyPools.length > 0 && (
                 <Button
@@ -1515,6 +1769,61 @@ export default function ProviderDetailPage() {
                     >
                       Delete Selected ({selectedConnectionIds.length})
                     </Button>
+                  )}
+                  {supportsCheckin && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        icon="event_available"
+                        onClick={handleBatchCheckin}
+                        disabled={batchCheckingIn || oneByOneRunning}
+                      >
+                        {batchCheckingIn
+                          ? (batchCheckinStatus || translate("Checking in..."))
+                          : translate("Check-in All")
+                        }
+                      </Button>
+                      <div className="inline-flex items-center rounded-[8px] border border-border bg-surface shadow-sm overflow-hidden h-7">
+                        <button
+                          type="button"
+                          onClick={handleToggleAutoCheckin}
+                          disabled={togglingAutoCheckin || batchCheckingIn}
+                          className={`inline-flex items-center justify-center gap-1.5 px-2.5 h-full text-xs font-semibold transition-all cursor-pointer disabled:opacity-50 ${
+                            autoCheckinEnabled
+                              ? "bg-brand-500 hover:bg-brand-600 text-white"
+                              : "bg-surface-2 hover:bg-surface-3 text-text-main"
+                          }`}
+                          title={
+                            autoCheckinEnabled
+                              ? `自动签到已开启（每天 ${autoCheckinTime}:00 逐个签到，间隔 5-10 秒）`
+                              : `自动签到已关闭（点击开启每天 ${autoCheckinTime}:00 自动签到）`
+                          }
+                        >
+                          <span className="material-symbols-outlined text-[16px]">
+                            {autoCheckinEnabled ? "alarm_on" : "alarm"}
+                          </span>
+                          <span>
+                            {autoCheckinEnabled
+                              ? `自动签到 (${autoCheckinTime})`
+                              : "自动签到"}
+                          </span>
+                        </button>
+                        <div className="h-4 w-px bg-border shrink-0" />
+                        <select
+                          value={autoCheckinTime}
+                          onChange={handleTimeChange}
+                          title="滚动选择每天自动签到整点 (00:00 - 23:00)"
+                          className="h-full bg-transparent px-1.5 text-xs font-medium text-text-main hover:bg-black/5 dark:hover:bg-white/5 focus:outline-none cursor-pointer border-none"
+                        >
+                          {HOURLY_OPTIONS.map((hourStr) => (
+                            <option key={hourStr} value={hourStr} className="bg-surface text-text-main">
+                              {hourStr}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
                   )}
                   <Button
                     size="sm"

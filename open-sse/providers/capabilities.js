@@ -212,7 +212,10 @@ export const PROVIDER_CAPABILITIES = {
     // deepseek-v4.1-flash replaces v4-flash (dropped from the server list;
     // the old endpoint still answers 200 but the published list is the
     // contract). maxOutput 128000 per the server's product-config payload.
-    "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 128000 },
+    "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 384000 },
+  },
+  "codebuddy-intl":{
+    "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 384000 },
   },
   // Qoder — upstream exposes opaque internal ids (dfmodel, kmodel, …); the
   // registry `name` is display-only and capability lookup matches on the raw
@@ -349,6 +352,7 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*glm*",           caps: { reasoning: true, thinkingFormat: "zai", contextWindow: 200000 } },
 
   // ── DeepSeek (thinking.enabled + reasoning_effort; r1 = thinking-only) ─
+  { pattern: "*deepseek-v4.1*", caps: { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 } },
   { pattern: "*deepseek-v4*",   caps: { reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 } },
   { pattern: "*reasoner*",      caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },
   { pattern: "*deepseek-r*",    caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },

@@ -1,6 +1,6 @@
 import http from "http";
 import { URL } from "url";
-import { CODEX_CONFIG, TRAE_CONFIG, WINDSURF_CONFIG, ZED_HOSTED_CONFIG } from "../constants/oauth.js";
+import { CODEX_CONFIG, TRAE_CONFIG, TRAEWORK_CONFIG, WINDSURF_CONFIG, ZED_HOSTED_CONFIG } from "../constants/oauth.js";
 
 // Loopback origin guard for local callback proxies.
 // Legit OAuth redirects are top-level navigations (no `Origin` header); a cross-site
@@ -536,6 +536,123 @@ export function stopTraeProxy() {
   if (traeProxyTimeout) { clearTimeout(traeProxyTimeout); traeProxyTimeout = null; }
   if (traeProxyServer) { traeProxyServer.close(); traeProxyServer = null; }
   traeProxyPort = null;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// TraeWork dynamic-port proxy. Singleton session (one connect at a time).
+// Callback path = /authorize with authCode/refreshToken + login_trace_id.
+// PKCE material (codeVerifier/machineId/deviceId) is cached by the provider
+// module (see providers/traework.js setTraeWorkSession), keyed by state; the
+// proxy only needs to hand the raw callback query back to exchangeTokens().
+// ───────────────────────────────────────────────────────────────────────────
+
+let traeWorkProxyServer = null;
+let traeWorkProxyTimeout = null;
+let traeWorkProxyPort = null;
+let traeWorkSession = null;
+
+export function registerTraeWorkSession({ state, codeVerifier, machineId, deviceId }) {
+  if (!state) return false;
+  traeWorkSession = { state, codeVerifier, machineId, deviceId, status: "pending", createdAt: Date.now() };
+  return true;
+}
+export function getTraeWorkSessionStatus(state) {
+  if (!traeWorkSession) return null;
+  if (state && traeWorkSession.state !== state) return null;
+  return traeWorkSession;
+}
+export function clearTraeWorkSession(state) {
+  if (!state || (traeWorkSession && traeWorkSession.state === state)) traeWorkSession = null;
+}
+
+export function startTraeWorkProxy() {
+  return new Promise((resolve) => {
+    if (traeWorkProxyServer) {
+      resolve({ success: true, port: traeWorkProxyPort, callbackUrl: `http://127.0.0.1:${traeWorkProxyPort}${TRAEWORK_CONFIG.callbackPath}` });
+      return;
+    }
+    const server = http.createServer(async (req, res) => {
+      const url = new URL(req.url, "http://localhost");
+      // The gateway redirects to callbackPath (/authorize); tolerate the common
+      // generic callback paths too so a host that rewrites the URL still works.
+      const accepted = new Set([TRAEWORK_CONFIG.callbackPath, "/callback", "/auth/callback"]);
+      if (!accepted.has(url.pathname)) {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+      const session = traeWorkSession;
+      if (!session) {
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, "No active TraeWork login session"));
+        return;
+      }
+      // Anti-CSRF: legit redirects are top-level navigations (no Origin header).
+      if (!isLoopbackOrigin(req.headers.origin)) {
+        res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, "Cross-origin callback rejected"));
+        return;
+      }
+      // Match on state OR login_trace_id (they are equal — buildAuthUrl sets
+      // login_trace_id to the same value used as state). Reject only on an
+      // explicit, mismatching state; a callback with no state still proceeds
+      // because the provider module resolves its session by login_trace_id.
+      const cbState = url.searchParams.get("state") || url.searchParams.get("login_trace_id") || url.searchParams.get("loginTraceID");
+      if (cbState && session.state && cbState !== session.state) {
+        session.status = "error";
+        session.error = "TraeWork callback state mismatch";
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, session.error));
+        stopTraeWorkProxy();
+        return;
+      }
+      // Pass the raw callback query to exchangeTokens → parseCallbackInfo.
+      const rawCallback = `${url.pathname}?${url.searchParams.toString()}`;
+      try {
+        const { exchangeTokens } = await import("../providers.js");
+        const { createProviderConnection } = await import("@/models");
+        const tokenData = await exchangeTokens("traework", rawCallback, null, session.codeVerifier, session.state, {
+          machineId: session.machineId,
+          deviceId: session.deviceId,
+          codeVerifier: session.codeVerifier,
+        });
+        const connection = await createProviderConnection({
+          provider: "traework",
+          authType: "oauth",
+          ...tokenData,
+          expiresAt: tokenData.expiresIn
+            ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
+            : null,
+          testStatus: "active",
+        });
+        session.status = "done";
+        session.connectionId = connection.id;
+        session.email = connection.email;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(true, "You can close this window."));
+      } catch (err) {
+        session.status = "error";
+        session.error = err.message;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, err.message));
+      } finally {
+        stopTraeWorkProxy();
+      }
+    });
+    server.listen(0, "127.0.0.1", () => {
+      traeWorkProxyServer = server;
+      traeWorkProxyPort = server.address().port;
+      traeWorkProxyTimeout = setTimeout(() => stopTraeWorkProxy(), TRAEWORK_CONFIG.oauthTimeoutMs);
+      resolve({ success: true, port: traeWorkProxyPort, callbackUrl: `http://127.0.0.1:${traeWorkProxyPort}${TRAEWORK_CONFIG.callbackPath}` });
+    });
+    server.on("error", (err) => resolve({ success: false, reason: err.message }));
+  });
+}
+
+export function stopTraeWorkProxy() {
+  if (traeWorkProxyTimeout) { clearTimeout(traeWorkProxyTimeout); traeWorkProxyTimeout = null; }
+  if (traeWorkProxyServer) { traeWorkProxyServer.close(); traeWorkProxyServer = null; }
+  traeWorkProxyPort = null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import { ANTIGRAVITY_IDE_BASE_URL, ANTIGRAVITY_IDE_USER_AGENT, ANTIGRAVITY_OAUTH
 
 export default {
   id: "antigravity",
-  priority: 20,
+  priority: 3,
   alias: "ag",
   uiAlias: "ag",
   display: {

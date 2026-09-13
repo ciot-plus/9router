@@ -1,0 +1,40 @@
+# CNB 自定义按钮（手动触发流水线）
+# 文档：https://docs.cnb.cool/zh/build/web-trigger.html
+# 注意：event 必须在 .cnb.yml 中存在，否则无法触发
+# reg 为分支名正则，^dev$ 表示按钮只在 dev 分支详情页显示
+branch:
+  - reg: ^dev$
+    buttons:
+      - name: 构建并推送镜像
+        description: 构建 9router 镜像并推送到 制品库
+        event: web_trigger_docker_build
+        isDefault: true
+        groupName: 发布
+        inputs:
+          image_version:
+            name: 镜像版本
+            description: 镜像 tag，留空则默认 latest
+            type: input
+            placeholder: latest
+            default: latest
+          also_latest:
+            name: 同时打 latest 标签
+            description: 版本不是 latest 时，额外再推一份 :latest
+            type: select
+            default: "true"
+            options:
+              - name: 是
+                value: "true"
+              - name: 否
+                value: "false"
+
+      - name: 发布 npm 包
+        description: 发布 9router CLI 到 npm仓库
+        event: web_trigger_npm_publish
+        groupName: 发布
+        inputs:
+          npm_version:
+            name: 版本号
+            description: 留空则使用 cli/package.json 中的版本
+            type: input
+            placeholder: 0.5.76

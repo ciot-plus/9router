@@ -50,6 +50,46 @@ function extractEmailFromAccessToken(accessToken) {
   return payload.email || payload.preferred_username || payload.sub || undefined;
 }
 
+// Keep first 4 + last 4 chars, middle → "***" ("clover.yeq@gmail.com" → "clov***.com").
+// Values too short to split 4/4 without overlap keep only the first character.
+function maskUsername(name) {
+  const s = String(name || "").trim();
+  if (!s) return null;
+  if (s.length <= 8) return `${s.slice(0, 1)}***`;
+  return `${s.slice(0, 4)}***${s.slice(-4)}`;
+}
+
+// CodeBuddy access tokens are Keycloak JWTs: sub doubles as the billing
+// X-User-Id, preferred_username is the login identity (email/phone) and must
+// be masked before it lands anywhere user-visible.
+function extractCodebuddyIdentity(accessToken) {
+  const payload = decodeJwtPayload(accessToken);
+  if (!payload) return {};
+  const rawUsername = typeof payload.preferred_username === "string" ? payload.preferred_username.trim() : "";
+  return {
+    uid: payload.sub || null,
+    rawUsername,
+    maskedName: maskUsername(rawUsername),
+  };
+}
+
+// Patch for a CodeBuddy OAuth connection missing identity fields: uid (billing
+// X-User-Id) from the JWT sub, plus masked display name. "Account…"-prefixed
+// default names are replaced too; custom names never are. Null = nothing to do.
+function buildCodebuddyIdentityPatch(conn) {
+  if (!conn || (conn.provider !== "codebuddy-cn" && conn.provider !== "codebuddy-intl")) return null;
+  if (conn.authType !== "oauth" || !conn.accessToken) return null;
+  const { uid, rawUsername, maskedName } = extractCodebuddyIdentity(conn.accessToken);
+  if (!uid && !maskedName) return null;
+  const psd = conn.providerSpecificData || {};
+  const patch = {};
+  if (uid && !psd.uid) patch.providerSpecificData = { ...psd, uid };
+  if (maskedName && (!conn.name || /^Account/.test(conn.name) || conn.name === rawUsername)) {
+    patch.name = maskedName;
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
 export async function fetchKiroProfileArn(accessToken) {
   if (!accessToken) return null;
   try {
@@ -87,4 +127,7 @@ export {
   decodeXaiIdTokenEmail,
   decodeJwtPayload,
   extractEmailFromAccessToken,
+  maskUsername,
+  extractCodebuddyIdentity,
+  buildCodebuddyIdentityPatch,
 };

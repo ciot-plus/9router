@@ -163,3 +163,8 @@ export const USAGE_SUPPORTED_PROVIDERS = REGISTRY
 export const USAGE_APIKEY_PROVIDERS = REGISTRY
   .filter(r => r.features?.usageApikey)
   .map(r => r.id);
+
+export const CHECKIN_SUPPORTED_PROVIDERS = REGISTRY
+  .filter(r => r.features?.checkin)
+  .map(r => r.id);
+

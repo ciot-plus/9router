@@ -1,0 +1,133 @@
+# CNB 流水线配置
+# 文档：https://docs.cnb.cool/zh/build/grammar.html
+# 仅 dev 分支可触发（与 .cnb/web_trigger.yml 的 reg: ^dev$ 对应）
+dev:
+  # 按钮：构建并推送镜像 -> 制品库
+  web_trigger_docker_build:
+    - name: 构建并推送 Docker 镜像
+      services:
+        - docker
+      # 默认推送到 CNB 制品库
+      # 需要改名/换仓库时，在下面 stages 里覆盖 IMAGE_REPO 即可
+      stages:
+        - name: 解析镜像版本
+          timeout: 2h
+          script: |
+            set -e
+            IMAGE_REPO="${IMAGE_REPO:-${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}}"
+            VERSION="${image_version:-latest}"
+            echo "branch    : $CNB_BRANCH"
+            echo "image repo: $IMAGE_REPO"
+            echo "image tag : $VERSION"
+            echo "##[set-output image=$IMAGE_REPO:$VERSION]"
+          exports:
+            image: IMAGE_FULL
+
+        # 用 docker:cache 内置任务构建依赖缓存镜像，替代旧的 docker pull 拉同 tag 旧镜像
+        # 文档：https://docs.cnb.cool/zh/build/internal-steps.html#docker-cache-output
+        - name: Docker cache
+          type: docker:cache
+          options:
+            dockerfile: cache.dockerfile
+            # 依赖清单变化时重建缓存镜像（package.json == package-lock.json 变更信号）
+            by:
+              - package.json
+            versionBy:
+              - package.json
+            # 等待缓存镜像 push 成功后再继续后续构建
+            sync: true
+          exports:
+            name: DOCKER_CACHE_IMAGE_NAME
+
+        - name: Docker build
+          script: |
+            set -e
+            docker build \
+              --build-arg BUILDKIT_INLINE_CACHE=1 \
+              --cache-from "$DOCKER_CACHE_IMAGE_NAME" \
+              --label "org.opencontainers.image.revision=$CNB_COMMIT" \
+              -t "$IMAGE_FULL" .
+
+        - name: Docker push
+          script: |
+            set -e
+            docker push "$IMAGE_FULL"
+            echo "pushed: $IMAGE_FULL"
+
+            # 版本不是 latest 时，同一份镜像再打一份 latest
+            if [ "${also_latest:-true}" = "true" ] && [ "${IMAGE_FULL##*:}" != "latest" ]; then
+              LATEST="${IMAGE_FULL%:*}:latest"
+              docker tag "$IMAGE_FULL" "$LATEST"
+              docker push "$LATEST"
+              echo "pushed: $LATEST"
+            fi
+
+  # 按钮：发布 npm 包 -> npm仓库
+  # 与 docker 构建共用同一份 docker:cache 依赖缓存镜像（by/versionBy 均按 package.json），
+  # 根目录 node_modules 直接取自缓存镜像，避免重复 npm install。
+  web_trigger_npm_publish:
+    - services:
+        - docker
+      docker:
+        # Use Alpine (musl) node image so installed native deps (lightningcss,
+        # @next/swc, @tailwindcss/oxide) match the musl-based publish container
+        # `tencentcom/npm`. A glibc install here makes `npm publish`
+        # (prepublishOnly -> next build) fail with
+        # "Cannot find module '../lightningcss.linux-x64-musl.node'".
+        image: node:22-alpine
+      stages:
+        - name: Docker cache
+          type: docker:cache
+          options:
+            dockerfile: cache.dockerfile
+            by:
+              - package.json
+            versionBy:
+              - package.json
+            # 等待缓存镜像 push 成功后再继续
+            sync: true
+          exports:
+            name: DOCKER_CACHE_IMAGE_NAME
+
+        - name: Install deps
+          script: |
+            set -e
+            # 复用 docker 依赖缓存镜像中已装好的根目录 node_modules
+            if CID="$(docker create "$DOCKER_CACHE_IMAGE_NAME" 2>/dev/null)"; then
+              docker cp "$CID:/app/node_modules" ./node_modules
+              docker rm "$CID" >/dev/null
+              echo "reused root node_modules from $DOCKER_CACHE_IMAGE_NAME"
+            else
+              echo "cache image unavailable, falling back to npm install"
+              npm install --registry=https://npm-mirror.cnb.cool
+            fi
+            # cli 依赖独立安装
+            cd cli
+            npm install --registry=https://npm-mirror.cnb.cool
+
+        - name: Update version
+          # 修改 cli/package.json 中的 version，但不会提交代码
+          # 未指定 npm_version 时，若当前版本已在制品库存在，自动递增补丁版本避免发布冲突
+          script: |
+            set -e
+            cd cli
+            if [ -n "$npm_version" ]; then
+              npm version "$npm_version" --no-git-tag-version
+            else
+              CUR="$(node -p "require('./package.json').version")"
+              if npm view "9router@$CUR" version >/dev/null 2>&1; then
+                npm version patch --no-git-tag-version
+                echo "version $CUR already published; auto-bumped to $(node -p "require('./package.json').version")"
+              fi
+            fi
+            echo "package: $(node -p "require('./package.json').name")@$(node -p "require('./package.json').version")"
+
+        - name: Publish to CNB
+          image: tencentcom/npm
+          settings:
+            username: $CNB_TOKEN_USER_NAME
+            token: $CNB_TOKEN
+            email: $CNB_COMMITTER_EMAIL
+            registry: https://npm.cnb.cool/ciot/n/-/packages/
+            folder: ./cli
+            fail_on_version_conflict: true

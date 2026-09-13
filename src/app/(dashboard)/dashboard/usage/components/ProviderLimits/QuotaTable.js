@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { formatResetTime, getRemainingPercentage } from "./utils";
+import { formatResetTime, getRemainingPercentage, isQuotaDepleted } from "./utils";
 
 const PAGE_SIZE = 10;
 
@@ -90,8 +90,14 @@ export default function QuotaTable({
   sortMode = "default",
   showSortLabel = false,
   onHideQuota = null,
+  hideDepleted = true,
 }) {
   const [page, setPage] = useState(1);
+  const [showDepletedLocal, setShowDepletedLocal] = useState(false);
+
+  useEffect(() => {
+    setShowDepletedLocal(false);
+  }, [hideDepleted]);
 
   const normalizedQuotas = useMemo(
     () => quotas.map((quota, index) => ({
@@ -102,22 +108,69 @@ export default function QuotaTable({
     [quotas],
   );
 
+  const { activeQuotas, depletedQuotas } = useMemo(() => {
+    const active = [];
+    const depleted = [];
+    for (const q of normalizedQuotas) {
+      if (isQuotaDepleted(q)) {
+        depleted.push(q);
+      } else {
+        active.push(q);
+      }
+    }
+    return { activeQuotas: active, depletedQuotas: depleted };
+  }, [normalizedQuotas]);
+
+  const shouldHideDepleted = hideDepleted && !showDepletedLocal;
+  const displayedQuotas = shouldHideDepleted ? activeQuotas : normalizedQuotas;
+
   const sortedQuotas = useMemo(
-    () => sortQuotas(normalizedQuotas, sortMode),
-    [normalizedQuotas, sortMode],
+    () => sortQuotas(displayedQuotas, sortMode),
+    [displayedQuotas, sortMode],
   );
 
   const totalPages = Math.max(1, Math.ceil(sortedQuotas.length / PAGE_SIZE));
 
   useEffect(() => {
     setPage(1);
-  }, [sortMode, quotas]);
+  }, [sortMode, quotas, showDepletedLocal, hideDepleted]);
 
   useEffect(() => {
     setPage((currentPage) => Math.min(currentPage, totalPages));
   }, [totalPages]);
 
   if (!quotas || quotas.length === 0) {
+    return null;
+  }
+
+  if (shouldHideDepleted && activeQuotas.length === 0 && depletedQuotas.length > 0) {
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[10px] text-text-muted">
+            0 quotas ({depletedQuotas.length} depleted hidden)
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-lg border border-dashed border-black/10 dark:border-white/10 px-2.5 py-2 text-xs text-text-muted">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-[11px] shrink-0">🔴</span>
+            <span className="truncate">
+              <span>All</span> {depletedQuotas.length} <span>quotas depleted</span>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowDepletedLocal(true)}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-primary hover:bg-primary/10 transition-colors"
+          >
+            <span>Show</span> {depletedQuotas.length} <span>depleted</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (displayedQuotas.length === 0) {
     return null;
   }
 
@@ -138,8 +191,33 @@ export default function QuotaTable({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[10px] text-text-muted">
-          {sortedQuotas.length} quota{sortedQuotas.length > 1 ? "s" : ""}
+        <div className="flex items-center gap-2 text-[10px] text-text-muted">
+          <span>
+            {sortedQuotas.length} quota{sortedQuotas.length > 1 ? "s" : ""}
+          </span>
+          {depletedQuotas.length > 0 && hideDepleted && (
+            <button
+              type="button"
+              onClick={() => setShowDepletedLocal((prev) => !prev)}
+              className="inline-flex items-center gap-1 rounded border border-black/10 dark:border-white/10 px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-primary hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+              title={showDepletedLocal ? "Hide 0% quotas" : "Show 0% quotas"}
+            >
+              <span className="material-symbols-outlined text-[12px]">
+                {showDepletedLocal ? "visibility" : "visibility_off"}
+              </span>
+              <span>
+                {showDepletedLocal ? (
+                  <>
+                    <span>Hide</span> {depletedQuotas.length} <span>depleted</span>
+                  </>
+                ) : (
+                  <>
+                    {depletedQuotas.length} <span>depleted hidden</span>
+                  </>
+                )}
+              </span>
+            </button>
+          )}
         </div>
         {showSortLabel && (
           <div className="rounded-md border border-black/10 bg-black/[0.02] px-2 py-1 text-[10px] text-text-muted dark:border-white/10 dark:bg-white/[0.03]">

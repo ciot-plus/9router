@@ -1,4 +1,5 @@
 import { CODEBUDDY_INTL_CONFIG } from "../constants/oauth.js";
+import { extractCodebuddyIdentity } from "../providerHelpers.js";
 
 // CodeBuddy International — mirrors codebuddy-cn flow against the .ai domain.
 const codebuddyIntl = {
@@ -63,12 +64,20 @@ const codebuddyIntl = {
     if (data.code === 11217) return { ok: true, data: { error: "authorization_pending" } };
     return { ok: false, data: { error: data.msg || "unknown_error" } };
   },
-  mapTokens: (tokens) => ({
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token,
-    expiresIn: tokens.expires_in || 86400,
-    providerSpecificData: {},
-  }),
+  mapTokens: (tokens) => {
+    const mapped = {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      expiresIn: tokens.expires_in || 86400,
+      providerSpecificData: {},
+    };
+    // sub doubles as the billing X-User-Id; the login identity must not be
+    // stored unmasked as the connection name
+    const { uid, maskedName } = extractCodebuddyIdentity(mapped.accessToken);
+    if (uid) mapped.providerSpecificData.uid = uid;
+    if (maskedName) mapped.name = maskedName;
+    return mapped;
+  },
 };
 
 export default codebuddyIntl;

@@ -151,6 +151,8 @@ export default function ProviderLimits() {
   const [quotaSortMode, setQuotaSortMode] = useState("default");
   const [quotaVisibility, setQuotaVisibility] = useState({});
   const [expiringFirst, setExpiringFirst] = useState(false);
+  const [hideDepleted, setHideDepleted] = useState(true);
+  const [hasHydratedHideDepleted, setHasHydratedHideDepleted] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [bulkToggling, setBulkToggling] = useState(false);
   const [page, setPage] = useState(1);
@@ -536,6 +538,18 @@ export default function ProviderLimits() {
     if (typeof window === "undefined" || !hasHydratedAutoRefresh) return;
     window.localStorage.setItem(AUTO_REFRESH_STORAGE_KEY, String(autoRefresh));
   }, [autoRefresh, hasHydratedAutoRefresh]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem("quotaHideDepleted");
+    setHideDepleted(stored === null ? true : stored === "true");
+    setHasHydratedHideDepleted(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasHydratedHideDepleted) return;
+    window.localStorage.setItem("quotaHideDepleted", String(hideDepleted));
+  }, [hideDepleted, hasHydratedHideDepleted]);
 
   // Load auto-ping per-connection maps
   useEffect(() => {
@@ -967,6 +981,19 @@ export default function ProviderLimits() {
             <span className="hidden sm:inline">Expiring first</span>
           </button>
 
+          <button
+            type="button"
+            onClick={() => setHideDepleted((prev) => !prev)}
+            aria-pressed={hideDepleted}
+            className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${hideDepleted ? "border-primary/40 bg-primary/10 text-primary" : "border-black/10 text-text-primary hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"}`}
+            title="Auto-hide quotas with 0% remaining"
+          >
+            <span className="material-symbols-outlined text-[14px]">
+              {hideDepleted ? "visibility_off" : "visibility"}
+            </span>
+            <span className="hidden sm:inline">Hide 0%</span>
+          </button>
+
           {/* Bulk: disable depleted */}
           <button
             type="button"
@@ -1285,6 +1312,7 @@ export default function ProviderLimits() {
                       conn.provider === "codex" && quotaSortMode !== "default"
                     }
                     onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
+                    hideDepleted={hideDepleted}
                   />
                 )}
                 {quota?.message && !error && !isLoading && (

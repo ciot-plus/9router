@@ -2,7 +2,7 @@
 import "open-sse/index.js";
 
 import { generatePKCE } from "../utils/pkce.js";
-import { extractCodexAccountInfo, fetchKiroProfileArn } from "../providerHelpers.js";
+import { extractCodexAccountInfo, buildCodebuddyIdentityPatch, fetchKiroProfileArn } from "../providerHelpers.js";
 
 import claude from "./claude.js";
 import codex from "./codex.js";
@@ -24,6 +24,7 @@ import codebuddyCn from "./codebuddy-cn.js";
 import codebuddyIntl from "./codebuddy-intl.js";
 import kimchi from "./kimchi.js";
 import trae from "./trae.js";
+import traework from "./traework.js";
 import windsurf from "./windsurf.js";
 import zed from "./zed.js";
 
@@ -49,6 +50,7 @@ const PROVIDERS = {
   "codebuddy-intl": codebuddyIntl,
   kimchi,
   trae,
+  traework,
   windsurf,
   zed,
 };
@@ -91,23 +93,27 @@ export async function generateAuthData(providerName, redirectUri, meta) {
   // Trae uses loginTraceID (set by prepareConfig) as the callback matcher, not PKCE state.
   const state = config.loginTraceID || pkceState;
   // Zed: codeVerifier carries the encoded RSA private key (from prepareConfig), not a PKCE verifier.
-  const codeVerifier = config.privateKeyVerifier || pkceVerifier;
+  // TraeWork: codeVerifier carries PKCE verifier generated in prepareConfig.
+  const codeVerifier = config.privateKeyVerifier || config.codeVerifier || pkceVerifier;
+  const effectiveCodeChallenge = config.codeChallenge || codeChallenge;
 
   let authUrl;
   if (provider.flowType === "device_code") {
     // Device code flow doesn't have auth URL upfront
     authUrl = null;
   } else if (provider.flowType === "authorization_code_pkce") {
-    authUrl = provider.buildAuthUrl(config, redirectUri, state, codeChallenge, meta || {});
+    authUrl = provider.buildAuthUrl(config, redirectUri, state, effectiveCodeChallenge, meta || {});
   } else {
-    authUrl = provider.buildAuthUrl(config, redirectUri, state, undefined, meta || {});
+    authUrl = provider.buildAuthUrl(config, redirectUri, state, effectiveCodeChallenge, meta || {});
   }
 
   return {
     authUrl,
     state,
     codeVerifier,
-    codeChallenge,
+    codeChallenge: effectiveCodeChallenge,
+    machineId: config.machineId,
+    deviceId: config.deviceId,
     redirectUri,
     flowType: provider.flowType,
     fixedPort: provider.fixedPort,
@@ -235,5 +241,26 @@ export async function backfillCodexEmails() {
   } catch (err) {
     codexBackfillDone = false;
     console.log("backfillCodexEmails failed:", err?.message || err);
+  }
+}
+
+// Run-once guard across the process lifetime
+let codebuddyBackfillDone = false;
+
+// Backfill uid (billing X-User-Id) + masked display name for existing CodeBuddy
+// OAuth connections, derived from the access-token JWT (sub / preferred_username).
+export async function backfillCodebuddyIdentity() {
+  if (codebuddyBackfillDone) return;
+  codebuddyBackfillDone = true;
+  try {
+    const { getProviderConnections, updateProviderConnection } = await import("@/lib/localDb");
+    const connections = await getProviderConnections();
+    for (const conn of connections) {
+      const patch = buildCodebuddyIdentityPatch(conn);
+      if (patch) await updateProviderConnection(conn.id, patch);
+    }
+  } catch (err) {
+    codebuddyBackfillDone = false;
+    console.log("backfillCodebuddyIdentity failed:", err?.message || err);
   }
 }

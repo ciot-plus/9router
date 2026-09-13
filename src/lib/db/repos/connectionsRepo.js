@@ -32,9 +32,26 @@ function resetHealthStateOnActivation(existing, patch) {
   return normalized;
 }
 
+function isSameLocalDay(date1, date2 = new Date()) {
+  if (!date1) return false;
+  const d = new Date(date1);
+  if (isNaN(d.getTime())) return false;
+  return (
+    d.getFullYear() === date2.getFullYear() &&
+    d.getMonth() === date2.getMonth() &&
+    d.getDate() === date2.getDate()
+  );
+}
+
 function rowToConn(row) {
   if (!row) return null;
   const extra = parseJson(row.data, {});
+  if (extra.providerSpecificData?.todayCheckedIn) {
+    const checkinTime = extra.providerSpecificData.lastCheckinAt || extra.providerSpecificData.statusCheckedAt;
+    if (!isSameLocalDay(checkinTime)) {
+      extra.providerSpecificData.todayCheckedIn = false;
+    }
+  }
   return {
     ...extra,
     id: row.id,

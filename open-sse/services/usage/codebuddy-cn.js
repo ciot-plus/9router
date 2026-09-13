@@ -57,6 +57,8 @@ async function getCodeBuddyUsage(providerId, accessToken, apiKey, providerSpecif
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
         Accept: "application/json",
+        // wild-work BillingHeaders parity: uid is optional — send only when known
+        ...(providerSpecificData?.uid ? { "X-User-Id": String(providerSpecificData.uid) } : {}),
       },
       body: "{}",
     }, proxyOptions);

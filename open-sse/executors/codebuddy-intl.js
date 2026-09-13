@@ -13,6 +13,15 @@ export class CodeBuddyIntlExecutor extends DefaultExecutor {
     super("codebuddy-intl");
   }
 
+  // wild-work ChatHeaders parity: attach the account uid as X-User-Id when
+  // known (stored in providerSpecificData at OAuth login), omit otherwise.
+  buildHeaders(credentials, stream, url, model) {
+    const headers = super.buildHeaders(credentials, stream, url, model);
+    const uid = credentials?.providerSpecificData?.uid;
+    if (uid) headers["X-User-Id"] = String(uid);
+    return headers;
+  }
+
   transformRequest(model, body, stream, credentials) {
     const transformed = super.transformRequest(model, body, stream, credentials);
     transformed.stream = true;
