@@ -51,7 +51,8 @@ export default {
     }
   },
   models: [
-    { id: "deepseek-v4.1-flash", name: "DeepSeek-V4.1-Flash" }
+    { id: "deepseek-v4.1-flash", name: "DeepSeek-V4.1-Flash" },
+    { id: "glm-5.2", name: "GLM-5.2" }
   ],
   oauth: {
     baseUrl: "https://copilot.tencent.com",

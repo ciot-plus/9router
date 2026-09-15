@@ -48,6 +48,7 @@ export default {
   // Same model lineup exposed by the CN gateway — intl backend is the same catalog.
   models: [
     { id: "deepseek-v4.1-flash", name: "DeepSeek-V4.1-Flash" },
+    { id: "glm-5.2", name: "GLM-5.2" }
   ],
   oauth: {
     baseUrl: "https://www.codebuddy.ai",
